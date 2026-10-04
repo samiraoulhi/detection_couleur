@@ -4,7 +4,7 @@
 /* ############################## INCLUDES ########################## */
 #include "tcs34725.h"
 #include "lcd16x2_i2c.h"
-#include "stm32f1xx_hal.h" // Adapter selon votre microcontrôleur
+#include "stm32f4xx_hal.h"
 
 /* ############################## VARIABLES ########################## */
 extern I2C_HandleTypeDef hi2c2;
@@ -27,4 +27,4 @@ void DefineColour(uint32_t colour);
 void rest_cal(void);
 void resetvar(void);
 
-#endif // MAIN_H
+#endif
