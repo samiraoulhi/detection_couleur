@@ -1,523 +1,85 @@
-# 🎨 Détection de couleurs avec STM32 et TCS34725
+# Détection de couleurs STM32F4 : capteur TCS34725 + écran LCD I2C
 
-## 📌 Description
+Système de détection de couleurs sur microcontrôleur **STM32F4** (famille F40x). Un capteur **TCS34725** mesure la lumière réfléchie par un objet, le programme en déduit la couleur, puis l'affiche sur un **écran LCD 16x2 en I2C** et sur la liaison série (UART).
 
-Ce projet consiste à développer un système embarqué basé sur un **microcontrôleur STM32** permettant de détecter la couleur dominante d'un objet à l'aide du capteur **TCS34725**.
+Couleurs reconnues : Orange, Rouge, Rose, Violet, Bleu, Cyan, Vert, Jaune.
 
-Le capteur mesure les composantes :
 
-* 🔴 Rouge (R)
-* 🟢 Vert (G)
-* 🔵 Bleu (B)
-* ⚪ Clear (luminosité globale)
 
-Les données sont récupérées par le STM32 via le protocole **I²C**. Le microcontrôleur analyse ensuite les valeurs mesurées afin d'identifier la couleur dominante.
+## Matériel
 
-Le résultat est :
+- Carte STM32F4 (F407, par exemple F4-Discovery)
+- Capteur de couleur TCS34725
+- Écran LCD 16x2 avec adaptateur I2C (PCF8574)
+- Adaptateur USB-série 3,3 V (optionnel, pour le terminal)
 
-* affiché à l'aide de LEDs RGB ;
-* envoyé via **UART** ;
-* affiché sur un **LCD 16×2 I²C** ;
-* comptabilisé pour chaque couleur.
+## Câblage
 
----
+Le capteur et l'écran partagent le même bus **I2C1**.
 
-## 🧩 Architecture du système
+| Signal | Broche STM32 | Capteur TCS34725 | LCD (backpack I2C) |
+|---|---|---|---|
+| SCL | PB6 | SCL | SCL |
+| SDA | PB9 (ou PB7, voir ci-dessous) | SDA | SDA |
+| Alimentation | | 3,3 V | 5 V |
+| Masse | GND | GND | GND |
+| UART TX | PA9 | | |
 
-```text
-                         ┌──────────────────┐
-                         │      STM32       │
-                         │                  │
-                         │  Programme en C  │
-                         └────────┬─────────┘
-                                  │
-                 ┌────────────────┼────────────────┐
-                 │                │                │
-                I²C              UART             GPIO
-                 │                │                │
-          ┌──────┴──────┐         │         ┌──────┴──────┐
-          │             │         │         │             │
-          ▼             ▼         ▼         ▼             ▼
-      TCS34725         LCD      PC/     LEDs RGB     LED capteur
-   Capteur couleur   16×2     Terminal
-```
+- Adresses I2C : capteur `0x29`, écran `0x27` (ou `0x3F` selon le module).
+- Choix de SDA : dans `i2c.h`, `I2C1_SDA_ON_PB9` vaut `1` pour PB9 et `0` pour PB7.
+- Le bus tourne à **100 kHz**, limite du PCF8574.
+- Terminal série : **115200 bauds, 8N1**, PA9 vers RX de l'adaptateur.
 
----
+## Organisation du code
 
-## 🔌 Connexions
+| Fichier | Rôle |
+|---|---|
+| `Color.c` | Programme principal : calcul de la teinte, plages de couleurs, affichage |
+| `tcs34725.c/.h` | Pilote du capteur (ID, initialisation, lecture RGBC) |
+| `lcd.c/.h` | Pilote de l'écran LCD via PCF8574 |
+| `i2c.c/.h` | Couche I2C1 bas niveau (start, stop, lecture, écriture) |
+| `usart.c/.h` | Liaison série USART1 (émission) |
+| `delay.c/.h` | Délais en µs et ms via SysTick |
+| `stm32f4xx_conf.h` | Sélection des périphériques de la bibliothèque |
+| `stm32f4xx_it.c/.h` | Gestionnaires d'interruptions (vides) |
 
-### TCS34725 → STM32
+## Compilation
 
-| TCS34725 | STM32 | Fonction           |
-| -------- | ----- | ------------------ |
-| SCL      | PB10  | Horloge I²C        |
-| SDA      | PB11  | Données I²C        |
-| LED      | PB9   | Commande de la LED |
-| VCC      | 3.3 V | Alimentation       |
-| GND      | GND   | Masse              |
+1. Créer un projet pour votre STM32F4 avec la **STM32F4xx StdPeriph Library**.
+2. Ajouter les sources du projet ci-dessus, ainsi que `misc.c`, `stm32f4xx_gpio.c`, `stm32f4xx_i2c.c`, `stm32f4xx_rcc.c`, `stm32f4xx_usart.c`, `system_stm32f4xx.c` et le fichier de démarrage de la carte.
+3. Définir les symboles : `USE_STDPERIPH_DRIVER` et `STM32F40_41xxx`.
+4. Régler l'horloge selon le quartz de la carte. Pour une F4-Discovery : `HSE_VALUE=8000000` et `PLL_M = 8` dans `system_stm32f4xx.c`.
 
+## Fonctionnement
 
----
+1. Initialisation de l'I2C1, puis du LCD, puis de l'UART.
+2. Lecture de l'ID du capteur (`0x44` attendu) et affichage sur l'écran.
+3. Boucle principale :
+   - 4 mesures espacées d'un temps d'intégration (environ 50 ms) ;
+   - calcul des ratios R/C, G/C, B/C (C = canal Clear), puis conversion en **teinte** ;
+   - moyenne des teintes, puis comparaison aux plages de couleurs ;
+   - affichage du nom de la couleur à chaque changement.
 
-## 📡 Protocoles de communication
+L'écran montre « Couleur : » sur la première ligne et la couleur détectée sur la seconde. Hors des plages connues, il affiche « Not in range ».
 
-### I²C
+## Réglages
 
-Le **TCS34725** communique avec le STM32 via I²C.
+Dans `Color.c` :
 
-Le STM32 agit comme **maître**, tandis que le TCS34725 agit comme **esclave**.
+- `N_SAMPLES` : nombre de mesures moyennées.
+- `DEBUG_HUE` : à `1`, l'UART envoie la valeur Clear et la teinte (×1000) à chaque cycle, pour régler les seuils.
 
-Les fonctions HAL utilisées sont :
+Dans `tcs34725.c` : `TCS_GAIN_VALUE` (gain) et `TCS_ATIME_VALUE` (temps d'intégration).
 
-```c
-HAL_I2C_Master_Transmit();
-HAL_I2C_Master_Receive();
-```
+Les seuils de teinte viennent du projet d'origine, réglés pour un autre capteur. Ils sont à recalibrer avec votre capteur, vos objets et votre éclairage.
 
-L'adresse utilisée dans le code est :
+## Dépannage
 
-```c
-0x52
-```
-
-Le LCD est également piloté via une interface I²C.
-
----
-
-### UART
-
-Le protocole UART est utilisé pour transmettre le résultat de la détection.
-
-Exemples de messages :
-
-```text
-= Red
-= Green
-= Blue
-```
-
-La transmission est réalisée avec :
-
-```c
-HAL_UART_Transmit();
-```
-
----
-
-### GPIO
-
-Les GPIO permettent de :
-
-* commander la LED du capteur ;
-* allumer la LED rouge ;
-* allumer la LED verte ;
-* allumer la LED bleue.
-
-La fonction HAL utilisée est :
-
-```c
-HAL_GPIO_WritePin();
-```
-
----
-
-# 🔄 Fonctionnement du programme
-
-## 1. Activation de la LED du capteur
-
-La fonction :
-
-```c
-Read_cts34725();
-```
-
-commence par activer la LED du TCS34725 :
-
-```c
-HAL_GPIO_WritePin(
-    LedSensor_GPIO_Port,
-    LedSensor_Pin,
-    GPIO_PIN_SET
-);
-```
-
-Cette LED permet d'éclairer l'objet afin d'obtenir une mesure de couleur.
-
----
-
-## 2. Lecture du canal Clear
-
-Le registre Clear est lu via I²C :
-
-```c
-0x94
-```
-
-Deux octets sont récupérés afin de reconstruire une valeur sur 16 bits.
-
-```c
-Clear_value =
-    (((int)Clear_data[1]) << 8)
-    | Clear_data[0];
-```
-
----
-
-## 3. Lecture du rouge
-
-Le registre rouge utilisé est :
-
-```c
-0x96
-```
-
-Les deux octets reçus sont combinés afin d'obtenir :
-
-```c
-Red_value
-```
-
----
-
-## 4. Lecture du vert
-
-Le registre vert est :
-
-```c
-0x98
-```
-
-La valeur obtenue est stockée dans :
-
-```c
-Green_value
-```
-
----
-
-## 5. Lecture du bleu
-
-Le registre bleu est :
-
-```c
-0x9A
-```
-
-La valeur obtenue est stockée dans :
-
-```c
-Blue_value
-```
-
----
-
-## 6. Identification de la couleur
-
-Les valeurs R, G et B sont comparées.
-
-### Rouge
-
-```c
-if(Red_value > Blue_value &&
-   Red_value > Green_value)
-```
-
-Si la composante rouge est la plus importante :
-
-```text
-→ Rouge détecté
-```
-
-### Vert
-
-```c
-else if(Green_value > Red_value &&
-        Green_value > Blue_value)
-```
-
-Si la composante verte est la plus importante :
-
-```text
-→ Vert détecté
-```
-
-### Bleu
-
-```c
-else if(Blue_value > Red_value &&
-        Blue_value > Green_value)
-```
-
-Si la composante bleue est la plus importante :
-
-```text
-→ Bleu détecté
-```
-
----
-
-# 💡 Indication par LED
-
-Lorsqu'une couleur est détectée, la LED correspondante est activée.
-
-### Rouge
-
-```text
-🔴 ON
-🟢 OFF
-🔵 OFF
-```
-
-### Vert
-
-```text
-🔴 OFF
-🟢 ON
-🔵 OFF
-```
-
-### Bleu
-
-```text
-🔴 OFF
-🟢 OFF
-🔵 ON
-```
-
----
-
-# 📺 Affichage LCD
-
-Le LCD affiche le nombre de détections pour chaque couleur.
-
-Exemple :
-
-```text
-R:3 G:2 B:5
-```
-
-Cela signifie :
-
-```text
-3 détections rouges
-2 détections vertes
-5 détections bleues
-```
-
-L'affichage est réalisé avec :
-
-```c
-lcd16x2_i2c_printf();
-```
-
----
-
-# 🔢 Gestion des compteurs
-
-Les compteurs utilisés sont :
-
-```c
-uint32_t NR;
-uint32_t NG;
-uint32_t NB;
-```
-
-avec :
-
-* `NR` → nombre de détections rouges
-* `NG` → nombre de détections vertes
-* `NB` → nombre de détections bleues
-
-La variable :
-
-```c
-c
-```
-
-permet de mémoriser la dernière couleur détectée.
-
-Cela évite d'incrémenter le compteur à chaque boucle lorsque la même couleur reste devant le capteur.
-
-Exemple :
-
-```text
-Objet rouge
-    ↓
-Détection rouge
-    ↓
-NR++
-    ↓
-c = 1
-    ↓
-Rouge toujours présent
-    ↓
-pas de nouvelle incrémentation
-```
-
----
-
-# 🧪 Test du capteur
-
-La fonction :
-
-```c
-Test_cts34725();
-```
-
-permet de vérifier la réponse du capteur via I²C.
-
-Le programme lit une information d'identification du composant et compare la valeur reçue à la valeur attendue.
-
-Cela permet de vérifier que la communication avec le capteur fonctionne.
-
----
-
-# 🔁 Réinitialisation
-
-La fonction :
-
-```c
-rest_cal();
-```
-
-remet les compteurs à zéro :
-
-```c
-NR = 0;
-NG = 0;
-NB = 0;
-```
-
-La fonction :
-
-```c
-resetvar();
-```
-
-réinitialise également plusieurs variables internes du programme.
-
----
-
-# 🛠️ Technologies utilisées
-
-| Technologie           | Utilisation                        |
-| --------------------- | ---------------------------------- |
-| C                     | Développement embarqué             |
-| STM32                 | Microcontrôleur                    |
-| STM32 HAL             | Abstraction matérielle             |
-| I²C                   | Communication avec TCS34725 et LCD |
-| UART                  | Transmission des résultats         |
-| GPIO                  | Commande des LEDs                  |
-| TCS34725              | Détection des couleurs             |
-| LCD 16×2              | Affichage                          |
-| STM32CubeMX / CubeIDE | Configuration et développement     |
-
----
-
-
-# 🚀 Améliorations possibles
-
-
-
-## 1. Amélioration de la classification
-
-La méthode actuelle repose uniquement sur :
-
-```text
-R > G et R > B
-```
-
-Elle peut donc être sensible aux conditions d'éclairage.
-
-Une meilleure approche serait de normaliser les valeurs :
-
-```text
-Rnorm = R / Clear
-Gnorm = G / Clear
-Bnorm = B / Clear
-```
-
-puis d'utiliser des seuils de classification.
-
----
-
-## 2. Calibration
-
-Une calibration pourrait être ajoutée afin de prendre en compte :
-
-* la lumière ambiante ;
-* la distance entre le capteur et l'objet ;
-* les caractéristiques de la LED ;
-* les différences entre les capteurs.
-
----
-
-## 3. Remplacer les valeurs magiques
-
-Au lieu de :
-
-```c
-0x94
-0x96
-0x98
-0x9A
-```
-
-on pourrait définir :
-
-```c
-#define TCS34725_CLEAR_REG 0x94
-#define TCS34725_RED_REG   0x96
-#define TCS34725_GREEN_REG 0x98
-#define TCS34725_BLUE_REG  0x9A
-```
-
-Cela rend le code plus lisible et plus maintenable.
-
----
-
-## 6. Utilisation de fonctions HAL adaptées
-
-Pour les lectures de registres, il serait possible d'utiliser les fonctions HAL de lecture mémoire I²C afin de rendre le code plus clair et plus robuste.
-
----
-
-# 🎯 Compétences mises en œuvre
-
-Ce projet permet de mettre en pratique plusieurs compétences en systèmes embarqués :
-
-* Programmation en **C**
-* Développement sur **STM32**
-* Utilisation de la **STM32 HAL**
-* Communication **I²C**
-* Communication **UART**
-* Configuration et utilisation des **GPIO**
-* Lecture de registres d'un capteur
-* Manipulation de données 16 bits
-* Traitement et classification de mesures
-* Affichage sur LCD
-* Gestion d'E/S embarquées
-* Débogage et validation d'un système embarqué
-
----
-
-# 📌 Résumé
-
-Le système repose sur un STM32 qui communique avec un TCS34725 par I²C. Le capteur fournit les composantes rouge, verte et bleue sur 16 bits. Le STM32 compare ces valeurs pour déterminer la couleur dominante.
-
-Le résultat est ensuite :
-
-```text
-                    TCS34725
-                       │
-                       │ I²C
-                       ▼
-                     STM32
-                       │
-          ┌────────────┼────────────┐
-          │            │            │
-         GPIO         UART          I²C
-          │            │            │
-          ▼            ▼            ▼
-       LEDs RGB       PC          LCD
-```
+| Symptôme | Piste |
+|---|---|
+| L'écran reste sur « Init capteur... » | Le capteur ne répond pas : vérifier câblage, alimentation et adresse. Le code n'a pas de timeout I2C |
+| Écran vide, rétroéclairage allumé | Régler le potentiomètre de contraste, ou essayer `LCD_I2C_ADDR` à `0x3F` dans `lcd.h` |
+| Caractères incorrects sur l'écran | Vérifier que le bus est à 100 kHz |
+| « Capteur inconnu » | L'ID lu n'est ni `0x44` ni `0x4D` : vérifier le modèle du capteur et le câblage |
+| Couleurs fausses | Recalibrer les seuils avec `DEBUG_HUE`, et adapter gain et éclairage |
+| Délais ou baud rate faux | Vérifier `HSE_VALUE` et `PLL_M` |
